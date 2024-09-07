@@ -75,7 +75,8 @@ class Tushare(_Base):
             # nonstandard_id = self.transfer_standard_ticker_to_nonstandard(i)
             # df_temp = self.get_data(nonstandard_id)
             df_temp = self.get_data(i)
-            self.dataframe = self.dataframe.append(df_temp)
+            # self.dataframe = self.dataframe.append(df_temp)
+            self.dataframe = pd.concat([self.dataframe, df_temp])
             # print("{} ok".format(i))
             time.sleep(0.25)
 
@@ -217,7 +218,8 @@ class ReturnPlotter:
             60  # you should scale this variable accroding to the total trading days
         )
         time = list(range(len(ours)))
-        datetimes = self.df_account_value.time.tolist()
+        # datetimes = self.df_account_value.time.tolist()
+        datetimes = self.df_account_value.date.tolist()
         ticks = [tick for t, tick in zip(time, datetimes) if t % days_per_tick == 0]
         plt.title("Cumulative Returns")
         plt.plot(time, ours, label="DDPG Agent", color="green")
