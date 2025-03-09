@@ -2,6 +2,7 @@ import copy
 import os
 import time
 import warnings
+from pathlib import Path 
 
 warnings.filterwarnings("ignore")
 from typing import List
@@ -14,7 +15,14 @@ import stockstats
 import talib
 from meta.data_processors._base import _Base
 
-import tushare as ts
+try:
+    import tushare as ts
+    #ts.set_token()
+except ImportError as e:
+    raise ImportError(f'tushare cannot be imported')
+else:
+    ts.set_token('f04e2752e845df823db192062430eb7d46bf37ecabd215cbd2cde8e9')
+    ts_pro = ts.pro_api()
 
 
 class Tushare(_Base):
@@ -45,6 +53,8 @@ class Tushare(_Base):
             print(f"Using {self.adj} method.")
         else:
             self.adj = None
+        #ts.set_token(self.token)
+        #self.ts_pro = ts.pro_api()
 
     def get_data(self, id) -> pd.DataFrame:
         # df1 = ts.pro_bar(ts_code=id, start_date=self.start_date,end_date='20180101')
@@ -58,7 +68,7 @@ class Tushare(_Base):
         )
 
     def download_data(
-        self, ticker_list: List[str], save_path: str = "./data/dataset.csv"
+        self, ticker_list: List[str], save_path: str = "~/Projects/tmp/tsdata/dataset.csv"
     ):
         """
         `pd.DataFrame`
@@ -68,7 +78,7 @@ class Tushare(_Base):
         assert self.time_interval == "1d", "Not supported currently"
 
         self.ticker_list = ticker_list
-        ts.set_token(self.token)
+        #ts.set_token(self.token)
 
         self.dataframe = pd.DataFrame()
         for i in tqdm(ticker_list, total=len(ticker_list)):
@@ -76,7 +86,9 @@ class Tushare(_Base):
             # df_temp = self.get_data(nonstandard_id)
             df_temp = self.get_data(i)
             # self.dataframe = self.dataframe.append(df_temp)
-            self.dataframe = pd.concat([self.dataframe, df_temp])
+            #self.dataframe = pd.concat([self.dataframe, df_temp])
+            self.dataframe = pd.concat([self.dataframe, df_temp], ignore_index=True)
+
             # print("{} ok".format(i))
             time.sleep(0.25)
 
@@ -93,12 +105,14 @@ class Tushare(_Base):
             "volume",
             "amount",
         ]
+        '''
         self.dataframe.sort_values(by=["time", "tic"], inplace=True)
         self.dataframe.reset_index(drop=True, inplace=True)
-
+        '''
         self.dataframe = self.dataframe[
             ["tic", "time", "open", "high", "low", "close", "volume"]
         ]
+        '''
         # self.dataframe.loc[:, 'tic'] = pd.DataFrame((self.dataframe['tic'].tolist()))
         self.dataframe["time"] = pd.to_datetime(self.dataframe["time"], format="%Y%m%d")
         self.dataframe["day"] = self.dataframe["time"].dt.dayofweek
@@ -109,6 +123,18 @@ class Tushare(_Base):
         self.dataframe.dropna(inplace=True)
         self.dataframe.sort_values(by=["time", "tic"], inplace=True)
         self.dataframe.reset_index(drop=True, inplace=True)
+        '''
+        # Convert "time" column to datetime first
+        self.dataframe["time"] = pd.to_datetime(self.dataframe["time"])
+
+        # Now, safely use .dt accessor
+        self.dataframe = (
+            self.dataframe
+            .assign(day=self.dataframe["time"].dt.dayofweek)  # Now "time" is datetime
+            .dropna()
+            .sort_values(by=["time", "tic"], ignore_index=True)
+        )
+        # print(self.dataframe.head())
 
         self.save_data(save_path)
 
@@ -122,9 +148,17 @@ class Tushare(_Base):
         :param data: (df) pandas dataframe, start, end
         :return: (df) pandas dataframe
         """
+        # this time we use multiindex (time, tic) to select data
+        range = df[target_date_col].between(start, end) #inclusive
+        data = df[range].set_index([target_date_col,'tic']).sort_index()
+        # print(data.head())
+        # raise
+
+        '''
         data = df[(df[target_date_col] >= start) & (df[target_date_col] < end)]
         data = data.sort_values([target_date_col, "tic"], ignore_index=True)
         data.index = data[target_date_col].factorize()[0]
+        '''
         return data
 
     def transfer_standard_ticker_to_nonstandard(self, ticker: str) -> str:
@@ -139,6 +173,7 @@ class Tushare(_Base):
         return nonstandard_ticker
 
     def save_data(self, path):
+        '''
         if ".csv" in path:
             path = path.split("/")
             filename = path[-1]
@@ -150,11 +185,21 @@ class Tushare(_Base):
                 filename = "/dataset.csv"
 
         os.makedirs(path, exist_ok=True)
-        self.dataframe.to_csv(path + filename, index=False)
+        '''
+        #file_path =Path(path)
+        if '.csv' in path:
+            file_path = Path(path).parent
+        else:
+            file_path = Path(path)
+        filename= 'dataset.csv'
+        
+        file_path.expanduser().mkdir(parents=True, exist_ok=True)
+
+        self.dataframe.to_csv(file_path/filename, index=False)
 
     def load_data(self, path):
         assert ".csv" in path  # only support csv format now
-        self.dataframe = pd.read_csv(path)
+        self.dataframe = pd.read_csv(path, parse_dates=['time'])
         columns = self.dataframe.columns
         assert (
             "tic" in columns and "time" in columns and "close" in columns
@@ -172,13 +217,29 @@ class ReturnPlotter:
         self.end = end_date
         self.trade = df_trade
         self.df_account_value = df_account_value
+        #self.ts_pro = ts.pro_api('27080ec403c0218f96f388bca1b1d85329d563c91a43672239619ef5')
+        self.ts_pro = ts.pro_api()
 
     def get_baseline(self, ticket):
-        df = ts.get_hist_data(ticket, start=self.start, end=self.end)
-        df.loc[:, "dt"] = df.index
-        df.index = range(len(df))
-        df.sort_values(axis=0, by="dt", ascending=True, inplace=True)
-        df["time"] = pd.to_datetime(df["dt"], format="%Y-%m-%d")
+        #df = ts.get_hist_data(ticket, start=self.start, end=self.end)
+        if ticket == '399300.SZ': 
+            df = ts_pro.index_daily(ts_code=ticket, start_date=self.start, end_date=self.end)
+        else:
+            df = ts_pro.daily(ts_code=ticket, start_date=self.start, end_date=self.end)
+        # df.loc[:, "dt"] = df.index
+        # df.index = range(len(df))
+        '''
+        df = df.rename(columns={"trade_date":"date"})
+        df["date"] = pd.to_datetime(df["date"])
+        df = df[['date', 'close']].set_index('date').sort_index()
+        '''
+        df = (df.assign(date=pd.to_datetime(df['trade_date']))
+                .set_index('date')
+                .sort_index()
+                [['close']]
+                )
+        
+        #df.sort_values(axis=0, by="dt", ascending=True, inplace=True)
         return df
 
     def plot(self, baseline_ticket=None):
@@ -191,26 +252,35 @@ class ReturnPlotter:
         tic2label = {"399300": "CSI 300 Index", "000016": "SSE 50 Index"}
         if baseline_ticket:
             # 使用指定ticket作为baseline
+            
             baseline_df = self.get_baseline(baseline_ticket)
+            '''
             baseline_date_list = baseline_df.time.dt.strftime("%Y-%m-%d").tolist()
-            df_date_list = self.df_account_value.time.tolist()
+            df_date_list = self.df_account_value.date.tolist()
             df_account_value = self.df_account_value[
-                self.df_account_value.time.isin(baseline_date_list)
+                self.df_account_value.date.isin(baseline_date_list)
             ]
             baseline_df = baseline_df[baseline_df.time.isin(df_date_list)]
             baseline = baseline_df.close.tolist()
             baseline_label = tic2label.get(baseline_ticket, baseline_ticket)
             ours = df_account_value.account_value.tolist()
+            '''
         else:
             # 均等权重
-            all_date = self.trade.time.unique().tolist()
+            baseline_df = self.trade.groupby('time')[['close']].mean()
+            '''
+            all_date = self.trade.time.unique().tolist()[1:]
             baseline = []
             for day in all_date:
                 day_close = self.trade[self.trade["time"] == day].close.tolist()
                 avg_close = sum(day_close) / len(day_close)
                 baseline.append(avg_close)
             ours = self.df_account_value.account_value.tolist()
-
+            '''
+        account_vs_baseline = baseline_df.join(self.df_account_value, how='inner')
+        cum_return = account_vs_baseline.pct_change().add(1).cumprod().sub(1)
+        cum_return.mul(100).plot(title="Cumulative Returns", grid=True)
+        '''
         ours = self.pct(ours)
         baseline = self.pct(baseline)
 
@@ -232,6 +302,7 @@ class ReturnPlotter:
         plt.legend()
         plt.show()
         plt.savefig(f"plot_{baseline_ticket}.png")
+        '''
 
     def plot_all(self):
         baseline_label = "Equal-weight portfolio"
@@ -314,7 +385,8 @@ class ReturnPlotter:
     def get_return(self, df, value_col_name="account_value"):
         df = copy.deepcopy(df)
         df["daily_return"] = df[value_col_name].pct_change(1)
-        df["time"] = pd.to_datetime(df["time"], format="%Y-%m-%d")
-        df.set_index("time", inplace=True, drop=True)
+        # df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+        df["date"] = pd.to_datetime(df["date"])
+        df.set_index("date", inplace=True, drop=True)
         df.index = df.index.tz_localize("UTC")
         return pd.Series(df["daily_return"], index=df.index)

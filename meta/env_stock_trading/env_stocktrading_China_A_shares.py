@@ -7,7 +7,7 @@ from gymnasium.utils import seeding
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 
 class StockTradingEnv(gym.Env):
@@ -25,7 +25,7 @@ class StockTradingEnv(gym.Env):
         sell_cost_pct,
         reward_scaling,
         state_space,
-        action_space,
+        action_dim,
         tech_indicator_list,
         turbulence_threshold=None,
         make_plots=False,
@@ -41,6 +41,8 @@ class StockTradingEnv(gym.Env):
     ):
         self.day = day
         self.df = df
+        self.date_range = df.index.levels[0].to_list() #index 0 is time
+
         self.stock_dim = stock_dim
         self.hmax = hmax
         self.initial_amount = initial_amount
@@ -48,13 +50,13 @@ class StockTradingEnv(gym.Env):
         self.sell_cost_pct = sell_cost_pct
         self.reward_scaling = reward_scaling
         self.state_space = state_space
-        self.action_space = action_space
+        self.action_dim = action_dim
         self.tech_indicator_list = tech_indicator_list
-        self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_space,))
+        self.action_space = spaces.Box(low=-1, high=1, shape=(self.action_dim,))
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.state_space,)
         )
-        self.data = self.df.loc[self.day]
+        self.data = self.df.loc[self.date_range[self.day]]
         self.terminal = False
         self.make_plots = make_plots
         self.print_verbosity = print_verbosity
@@ -65,10 +67,11 @@ class StockTradingEnv(gym.Env):
         self.mode = mode
         self.iteration = iteration
         # initalize state
+        self._multi_stock = True if len(self.df.index.get_level_values(1).unique()) > 1 else False
         self.initial_buy = initial_buy
         self.hundred_each_trade = hundred_each_trade
         self.state = self._initiate_state()
-        self.end_date = len(self.df.index.unique()) - 1
+        self.end_date = len(self.date_range) - 1
 
         # initialize reward
         self.reward = 0
@@ -79,166 +82,173 @@ class StockTradingEnv(gym.Env):
         # memorize all the total balance change
         self.portfolio_memory = []
         self.actions_memory = []
-        self.date_memory = [self._get_date()]
-        self._multi_stock = True if len(self.df.tic.unique()) > 1 else False
+        self.date_memory = []
+
         #self._seed()
-    '''
-    def _sell_stock(self, index, action):
-        def _do_sell_normal():
-            if self.state[index + 1] > 0:
-                # Sell only if the price is > 0 (no missing data in this particular date)
-                # perform sell action based on the sign of the action
-                if self.state[index + self.stock_dim + 1] > 0:
-                    # Sell only if current asset is > 0
-                    sell_num_shares = min(
-                        abs(action), self.state[index + self.stock_dim + 1]
-                    )
-                    if self.hundred_each_trade:
-                        sell_num_shares = sell_num_shares // 100 * 100
 
-                    sell_amount = self.state[index + 1] * sell_num_shares
-                    cost_amount = sell_amount * self.sell_cost_pct
-                    self.state[0] += sell_amount - cost_amount
-                    self.state[index + self.stock_dim + 1] -= sell_num_shares
-                    self.cost += cost_amount
-                    self.trades += 1
-                else:
-                    sell_num_shares = 0
-            else:
-                sell_num_shares = 0
-
-            return sell_num_shares
-
-        # perform sell action based on the sign of the action
-        if self.turbulence_threshold is not None:
-            if self.turbulence >= self.turbulence_threshold:
-                if self.state[index + 1] > 0:
-                    # Sell only if the price is > 0 (no missing data in this particular date)
-                    # if turbulence goes over threshold, just clear out all positions
-                    if self.state[index + self.stock_dim + 1] > 0:
-                        # Sell only if current asset is > 0
-                        sell_num_shares = self.state[index + self.stock_dim + 1]
-                        sell_amount = self.state[index + 1] * sell_num_shares
-                        cost_amount = sell_amount * self.sell_cost_pct
-
-                        self.state[0] += sell_amount - cost_amount
-
-                        self.state[index + self.stock_dim + 1] = 0
-                        self.cost += cost_amount
-                        self.trades += 1
-                    else:
-                        sell_num_shares = 0
-                else:
-                    sell_num_shares = 0
-            else:
-                sell_num_shares = _do_sell_normal()
-        else:
-            sell_num_shares = _do_sell_normal()
-
-        return sell_num_shares
-
-    def _buy_stock(self, index, action):
-        def _do_buy():
-            if self.state[index + 1] > 0:
-                # Buy only if the price is > 0 (no missing data in this particular date)
-                available_amount = self.state[0] // self.state[index + 1]
-
-                # update balance
-                buy_num_shares = min(available_amount, action)
-                if self.hundred_each_trade:
-                    buy_num_shares = buy_num_shares // 100 * 100
-
-                if buy_num_shares > 0:
-                    buy_amount = self.state[index + 1] * buy_num_shares
-                    cost_amount = buy_amount * self.buy_cost_pct
-
-                    self.state[0] -= buy_amount + cost_amount
-
-                    self.state[index + self.stock_dim + 1] += buy_num_shares
-
-                    self.cost += cost_amount
-                    self.trades += 1
-                else:
-                    buy_num_shares = 0
-            else:
-                buy_num_shares = 0
-
-            return buy_num_shares
-
-        # perform buy action based on the sign of the action
-        if self.turbulence_threshold is None:
-            buy_num_shares = _do_buy()
-        else:
-            if self.turbulence < self.turbulence_threshold:
-                buy_num_shares = _do_buy()
-            else:
-                buy_num_shares = 0
-                pass
-
-        return buy_num_shares
-    '''
     def _trade_stock(self, actions: np.ndarray):
         if np.any(self.state[1: self.stock_dim+1] == 0):
-            raise ValueError("there are prices as zero which means the data was currupted")
+            raise ValueError("there are prices as zero which means the data was corrupted")
         # Sell process
         # first make sure the corresponding stock position
-        current_holdings = self.state[self.stock_dim: self.stock_dim*2+1].copy()
+        current_holdings = self.state[self.stock_dim+1: self.stock_dim*2+1].copy()
+        close_prices = self.state[1: self.stock_dim+1].copy()
+
         sell_actions = np.where(actions<0, -actions, 0)
         sell_num_shares = np.where(
             sell_actions-current_holdings<0,
             sell_actions,
             current_holdings)
-        sell_amount = np.dot(self.state[1, self.stock+1], sell_num_shares)
-        cost_amount = sell_amount * self.sell_cost_pct
-        self.state[0] += sell_amount - cost_amount
-        self.state[self.stock_dim: 2*self.stock_dim+1] -= sell_num_shares
-        self.cost += cost_amount
+        sell_amount = np.dot(close_prices, sell_num_shares)
+        sell_cost = sell_amount * self.sell_cost_pct
+        self.state[0] += sell_amount - sell_cost
+        self.state[self.stock_dim+1: 2*self.stock_dim+1] -= sell_num_shares
+        self.cost += sell_cost
         self.trades += (sell_num_shares!=0).sum()
+        
         # buy process
-        # need to figure if amount is no adequate for all buying
+        # Here we use the percentage of each stock to buy instead of starving others in the original code
+        buy_actions = np.where(actions>0, actions, 0)
+        buy_allocation = self.state[0] * buy_actions * close_prices/ np.sum(buy_actions * close_prices)
+        buy_num_shares = buy_allocation // (close_prices * (1 + self.buy_cost_pct))
+        # buy_num_shares = np.minimum(buy_num_shares, buy_actions)
+        buy_amount = np.dot(close_prices, buy_num_shares)
+        buy_cost = buy_amount * self.buy_cost_pct
+        self.state[0] -= buy_amount + buy_cost
+        self.state[self.stock_dim+1: 2*self.stock_dim+1] += buy_num_shares
+        self.cost += buy_cost
+        self.trades += (buy_num_shares!=0).sum()
+        
+        '''
+
         argsort_actions = np.argsort(actions)
         buy_indices = argsort_actions[::-1][: np.where(actions > 0)[0].shape[0]]
+        mask = np.ones_like(actions, dtype=bool)
+        mask[buy_indices] = False
+        buy_act = actions.copy()
+        buy_act[mask] = 0
+        buy_allocation = buy_act / np.sum(buy_act[buy_indices]) * state_0 # NOTE: for not starving others
+        # buy_num_shares = np.zeros(stock_dim)
+        buy_num_shares = buy_allocation // (close_price * (1 + self.buy_cost_pct))
+        buy_amount = np.dot(self.state[1: self.stock_dim+1], buy_num_shares)
+        self.cost = buy_amount * self.buy_cost_pct
+        self.state[0] -= buy_amount + self.cost
+        self.state[self.stock_dim+1: 2*self.stock_dim+1] += buy_num_shares
+
+        buy_percentage = actions / np.sum(actions[buy_indices]) # NOTE: for not starving others
         buy_num_shares = np.zeros(self.stock_dim)
+        # TODO: Maybe we dont need to iterate all buy_indices
         for index in buy_indices:
             if self.state[0] > 0:
-                available_amount = self.state[0] // self.state[index + 1]
-                buy_num_shares[index] = min(available_amount, actions[index])
+                available_amount = self.state[0] * buy_percentage[index] // (
+                    self.state[index + 1] * 
+                    (1 + self.buy_cost_pct)
+                    )
+                buy_num_shares[index] = min(available_amount, actions[index]) # ignore
                 buy_amount = self.state[index + 1] * buy_num_shares[index]
                 cost_amount = buy_amount * self.buy_cost_pct
                 self.state[0] -= buy_amount + cost_amount
                 self.cost += cost_amount       
-        self.state[self.stock_dim: 2*self.stock_dim+1] += buy_num_shares
-        self.trades += (sell_num_shares!=0).sum()
+        self.state[self.stock_dim+1: 2*self.stock_dim+1] += buy_num_shares
+        self.trades += (buy_num_shares!=0).sum()
         
+     
         if self.turbulence_threshold is not None and self.turbulence >= self.turbulence_threshold:
-            sell_num_shares = self.state[self.stock_dim: 2*self.stock_dim+1]
-            sell_amount = np.dot(self.state[1, self.stock+1], sell_num_shares)
+            sell_num_shares = self.state[self.stock_dim+1: 2*self.stock_dim+1]
+            sell_amount = np.dot(self.state[1: self.stock_dim+1], sell_num_shares)
             cost_amount = sell_amount * self.sell_cost_pct
             self.state[0] += sell_amount - cost_amount
             self.state[self.stock_dim: 2*self.stock_dim+1] = 0
             self.cost += cost_amount
             self.trades += self.stock_dim
-
-        return sell_num_shares + buy_num_shares
+        '''
+        # final shares
+        return buy_num_shares - sell_num_shares
 
     def _make_plot(self):
-        portfolio_df = self.get_portfolio_df()
+        portfolio_df = self._get_portfolio_df()
         plt.plot(portfolio_df["date"], portfolio_df["total_asset"], color="r")
         plt.savefig(f"results/account_value_trade_{self.episode}.png")
         plt.close()
 
-    def step(self, actions):
+    def step(self, action):
         # action is a np.ndarray with ndim as stock dimension
         # here something wrong with terminal state 
+        # update next state
+        if self.day >= self.end_date - 1:
+            self.terminal = True  
 
-        '''
-        self.terminal = self.day >= len(self.df.index.unique()) - 1
+        action = action * self.hmax
+        action = action.astype(int)
+
+        if self.turbulence_threshold is not None and self.turbulence >= self.turbulence_threshold:
+            action = np.array([-self.hmax] * self.stock_dim)
+
+        # calculate information before trading
+        begin_cash = self.state[0]
+        begin_market_value = self._get_market_value()
+        begin_total_asset = begin_cash + begin_market_value
+        begin_cost = self.cost
+        begin_trades = self.trades
+        begin_stock = self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)]
+
+        # affect state[0], cost, trade and action itself
+        final_action = self._trade_stock(action)
+        self.actions_memory.append(final_action) 
+
+        self.day += 1
+        self.data = self.df.loc[self.date_range[self.day]]
+
+        self.state = self._update_state()  
+
+
+        if self.turbulence_threshold is not None:
+                self.turbulence = self.data["turbulence"].values[0]
+        
+        # calculate information after trading
+        end_cash = self.state[0]
+        end_market_value = self._get_market_value()
+        end_total_asset = end_cash + end_market_value
+        end_cost = self.cost
+        end_trades = self.trades
+        end_stock = self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)]
+
+        self.reward = end_total_asset - begin_total_asset
+        self.reward = self.reward * self.reward_scaling
+
+        # some panelty?
+        no_trade_indices = np.where((begin_stock - end_stock) == 0)[0]
+        penalty  = np.dot(self.state[no_trade_indices+1], self.state[no_trade_indices+self.stock_dim+1]) \
+            * 0.001
+        self.reward -= penalty
+
+        date = self._get_date()
+
+        step_info = {}
+        step_info.update(
+            {
+                "date": date,
+                "prev_total_asset": begin_total_asset,
+                "prev_cash": begin_cash,
+                "prev_market_value": begin_market_value,
+                "total_asset": end_total_asset,
+                "cash": end_cash,
+                "market_value": end_market_value,
+                "cost": end_cost - begin_cost,
+                "trades": end_trades - begin_trades,
+                "reward": self.reward,
+            }
+        ) 
+        self.portfolio_memory.append(step_info)
+        self.date_memory.append(date)
+
+        self.reward = self.reward * self.reward_scaling
+          
+        # update next state# state makes 
         if self.terminal:
-            print(f"Episode: {self.episode}")
-            if self.make_plots:
-                self._make_plot()
-
-            portfolio_df = self.get_portfolio_df()
+            print(f"Episode: {self.episode} end.")
+            
+            portfolio_df = self._get_portfolio_df()
             begin_total_asset = portfolio_df["prev_total_asset"].iloc[0]
             end_total_asset = portfolio_df["total_asset"].iloc[-1]
             tot_reward = end_total_asset - begin_total_asset
@@ -264,207 +274,20 @@ class StockTradingEnv(gym.Env):
                     print(f"Sharpe: {sharpe:0.3f}")
                 print("=================================")
 
-            if (self.model_name != "") and (self.mode != ""):
-                df_actions = self.save_action_memory()
-                df_actions.to_csv(
-                    f"results/actions_{self.mode}_{self.model_name}_{self.episode}.csv"
-                )
-                portfolio_df.to_csv(
-                    f"results/portfolio_{self.mode}_{self.model_name}_{self.episode}.csv",
-                    index=False,
-                )
 
-            # Add outputs to logger interface
-            # logger.record(key="environment/portfolio_value", value=end_total_asset)
-            # logger.record(key="environment/total_reward", value=tot_reward)
-            # logger.record(key="environment/total_reward_pct", value=(tot_reward / (end_total_asset - tot_reward)) * 100)
-            # logger.record(key="environment/total_cost", value=self.cost)
-            # logger.record(key="environment/total_trades", value=self.trades)
-
-            return self.state, self.reward, self.terminal, {}
-
+            trade_actions_df = self._get_actions_df()
+            info = {"portfolio_df": portfolio_df, "trade_actions_df": trade_actions_df}
         else:
-            actions = actions * self.hmax  # actions initially is scaled between 0 to 1
-            actions = actions.astype(
-                int
-            )  # convert into integer because we can't by fraction of shares
-            if self.turbulence_threshold is not None:
-                if self.turbulence >= self.turbulence_threshold:
-                    actions = np.array([-self.hmax] * self.stock_dim)
-
-            # calculate information before trading
-            begin_cash = self.state[0]
-            begin_market_value = self._get_market_value()
-            begin_total_asset = begin_cash + begin_market_value
-            begin_cost = self.cost
-            begin_trades = self.trades
-            begin_stock = self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)]
-
-            argsort_actions = np.argsort(actions)
-
-            sell_index = argsort_actions[: np.where(actions < 0)[0].shape[0]]
-            buy_index = argsort_actions[::-1][: np.where(actions > 0)[0].shape[0]]
-
-            for index in sell_index:
-                actions[index] = self._sell_stock(index, actions[index]) * (-1)
-
-            for index in buy_index:
-                actions[index] = self._buy_stock(index, actions[index])
-
-            if self.turbulence_threshold is not None:
-                self.turbulence = self.data["turbulence"].values[0]
-
-            # calculate information after trading
-            end_cash = self.state[0]
-            end_market_value = self._get_market_value()
-            end_total_asset = end_cash + end_market_value
-            end_cost = self.cost
-            end_trades = self.trades
-            end_stock = self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)]
-
-            self.actions_memory.append(actions)
-
-            i_list = []
-            for i in range(self.stock_dim):
-                if begin_stock[i] - end_stock[i] == 0:
-                    i_list.append(i)
-
-            self.reward = end_total_asset - begin_total_asset
-            for i in i_list:
-                self.reward -= (
-                    self.state[i + 1] * self.state[self.stock_dim + 1 + i]
-                ) * 0.001
-
-            date = self._get_date()
-
-            self.portfolio_memory.append(
-                {
-                    "date": date,
-                    "prev_total_asset": begin_total_asset,
-                    "prev_cash": begin_cash,
-                    "prev_market_value": begin_market_value,
-                    "total_asset": end_total_asset,
-                    "cash": end_cash,
-                    "market_value": end_market_value,
-                    "cost": end_cost - begin_cost,
-                    "trades": end_trades - begin_trades,
-                    "reward": self.reward,
-                }
-            )
-            self.date_memory.append(date)
-
-            self.reward = self.reward * self.reward_scaling
-
-            # update next state
-            self.day += 1
-            self.data = self.df.loc[self.day, :]
-            self.state = self._update_state()
-
-        return self.state, self.reward, self.terminal, {}
-        '''
-        actions = actions * self.hmax
-        actions = actions.astype(int)
-        # calculate information before trading
-        begin_cash = self.state[0]
-        begin_market_value = self._get_market_value()
-        begin_total_asset = begin_cash + begin_market_value
-        begin_cost = self.cost
-        begin_trades = self.trades
-        begin_stock = self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)]
-        '''
-        argsort_actions = np.argsort(actions)
-        sell_index = argsort_actions[: np.where(actions < 0)[0].shape[0]]
-        buy_index = argsort_actions[::-1][: np.where(actions > 0)[0].shape[0]]
-        for index in sell_index:
-            actions[index] = self._sell_stock(index, actions[index]) * (-1)
-
-        for index in buy_index:
-                actions[index] = self._buy_stock(index, actions[index])
-        '''
-        actions = self._trade_stock(actions)
-
-        if self.turbulence_threshold is not None:
-                self.turbulence = self.data["turbulence"].values[0]
-        
-        # calculate information after trading
-        end_cash = self.state[0]
-        end_market_value = self._get_market_value()
-        end_total_asset = end_cash + end_market_value
-        end_cost = self.cost
-        end_trades = self.trades
-        end_stock = self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)]
-
-        self.actions_memory.append(actions)
-
-        # some panelty?
-        no_trade_indices = np.where((begin_stock - end_stock) == 0)[0]
-        penalty  = np.dot(self.state[no_trade_indices+1], self.state[no_trade_indices+self.stock_dim+1]) \
-            * 0.001
-        self.reward -= penalty
-        '''
-        i_list = []
-        for i in range(self.stock_dim):
-            if begin_stock[i] - end_stock[i] == 0:
-                i_list.append(i)
-
-        self.reward = end_total_asset - begin_total_asset
-        for i in i_list:
-            self.reward -= (
-                self.state[i + 1] * self.state[self.stock_dim + 1 + i]
-            ) * 0.001
-        '''
-        date = self._get_date()
-        ''''
-        self.portfolio_memory.append(
-            {
-                "date": date,
-                "prev_total_asset": begin_total_asset,
-                "prev_cash": begin_cash,
-                "prev_market_value": begin_market_value,
-                "total_asset": end_total_asset,
-                "cash": end_cash,
-                "market_value": end_market_value,
-                "cost": end_cost - begin_cost,
-                "trades": end_trades - begin_trades,
-                "reward": self.reward,
-            }
-        )
-        '''
-        info = {}
-        info.update(
-            {
-                "date": date,
-                "prev_total_asset": begin_total_asset,
-                "prev_cash": begin_cash,
-                "prev_market_value": begin_market_value,
-                "total_asset": end_total_asset,
-                "cash": end_cash,
-                "market_value": end_market_value,
-                "cost": end_cost - begin_cost,
-                "trades": end_trades - begin_trades,
-                "reward": self.reward,
-            }
-        ) 
-        self.portfolio_memory.append(info)
-        self.date_memory.append(date)
-
-        self.reward = self.reward * self.reward_scaling
-          
-        # update next state
-        if self.day < self.end_date:
-            self.day += 1
-            self.data = self.df.loc[self.day, :]            
-        else:
-            self.terminal = True
-        self.state = self._update_state()
+            info = {}
 
         return self.state, self.reward, self.terminal, False, info
 
-    def reset(self, seed=None, opeions=None):
+    def reset(self, seed=None, options=None):
         # initiate state
         super().reset(seed=seed)
         self.day = 0
-        self.data = self.df.loc[self.day]
+        # self.data = self.df.loc[self.day]
+        self.data = self.df.loc[self.date_range[self.day]] # go back to the initial day
 
         self.state = self._initiate_state()
         self.turbulence = 0
@@ -473,7 +296,7 @@ class StockTradingEnv(gym.Env):
         self.terminal = False
         # self.iteration=self.iteration
         self.actions_memory = []
-        self.date_memory = [self._get_date()]
+        self.date_memory = []
         self.portfolio_memory = []
 
         self.episode += 1
@@ -484,190 +307,72 @@ class StockTradingEnv(gym.Env):
         return self.state
 
     def _initiate_state(self):
-        if self.initial:
-            # For Initial State
-            if self._multi_stock:
-                # for multiple stock
-                '''
-                state = (
-                    [self.initial_amount]
-                    + self.data.close.values.tolist()
-                    + [0] * self.stock_dim
-                    + sum(
-                        [
-                            self.data[tech].values.tolist()
-                            for tech in self.tech_indicator_list
-                        ],
-                        [],
-                    )
-                )
-                '''
-                state = np.concatenate(
-                    (
-                        [self.initial_amount],
-                        self.data.close.values,
-                        [0] * self.stock_dim,
-                        [self.data[tech].values for tech in self.tech_indicator_list]
-                    ), axis = None
-                )
-                if self.initial_buy:
-                    state = self._initial_buy()
-            else:
-                # for single stock
-                '''
-                state = (
-                    [self.initial_amount]
-                    + [self.data.close]
-                    + [0] * self.stock_dim
-                    + sum(
-                        [[self.data[tech]] for tech in self.tech_indicator_list],
-                        [],
-                    )
-                )
-                '''
-                state = np.concatenate(
-                    (
-                        [self.initial_amount],
-                        [self.data.close],
-                        [0] * self.stock_dim,
-                        [self.data[tech] for tech in self.tech_indicator_list] #values not work
-                    ), axis = None
-                )
-
-        else:
-            # Using Previous State
-            
-            if self._multi_stock:
-                '''
-                # for multiple stock
-                state = (
-                    [self.previous_state[0]]
-                    + self.data.close.values.tolist()
-                    + self.previous_state[
-                        (self.stock_dim + 1) : (self.stock_dim * 2 + 1)
-                    ]
-                    + sum(
-                        [
-                            self.data[tech].values.tolist()
-                            for tech in self.tech_indicator_list
-                        ],
-                        [],
-                    )
-                )
-                '''
-                state = np.concatenate(
-                    (
-                        [self.previous_state[0]],
-                        [self.data.close.values],
-                        self.previous_state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)],
-                        [self.data[tech].values for tech in self.tech_indicator_list]
-                    ), axis = None
-                )
-            
-            
-            else:
-                '''
-                # for single stock
-                state = (
-                    [self.previous_state[0]]
-                    + [self.data.close]
-                    + self.previous_state[
-                        (self.stock_dim + 1) : (self.stock_dim * 2 + 1)
-                    ]
-                    + sum(
-                        [[self.data[tech]] for tech in self.tech_indicator_list],
-                        [],
-                    )
-                )
-                '''
-
-                state = np.concatenate(
-                    (
-                        [self.previous_state[0]],
-                        [self.data.close],
-                        self.previous_state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)],
-                        [self.data[tech] for tech in self.tech_indicator_list]
-                    ), axis = None
-                )
-                
+        initial_amount = self.initial_amount if self.initial else self.previous_state[0]
+        close_value = self.data.close.values if self._multi_stock else [self.data.close]
+        tech_value = [self.data[tech].values for tech in self.tech_indicator_list] \
+            if self._multi_stock else [self.data[tech] for tech in self.tech_indicator_list]
+                        # for multiple stock
+        state = np.concatenate(
+            ([initial_amount],close_value,[0] * self.stock_dim, tech_value), axis = None
+        )
+        if self.initial_buy:
+            state = self._initial_buy()
+        
         return state
 
     def _update_state(self):
-        if self._multi_stock:
-            # for multiple stock
-            '''
-            state = (
-                [self.state[0]]
-                + self.data.close.values.tolist()
-                + list(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
-                + sum(
-                    [
-                        self.data[tech].values.tolist()
-                        for tech in self.tech_indicator_list
-                    ],
-                    [],
-                )
-            )
-            '''
-            state = np.concatenate(
-                (
-                    [self.state[0]],
-                    self.data.close.values,
-                    self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)],
-                    [self.data[tech].values for tech in self.tech_indicator_list]
-                ), axis = None
-            )
-        else:
-            # for single stock
-            '''
-            state = (
-                [self.state[0]]
-                + [self.data.close]
-                + list(self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)])
-                + sum(
-                    [[self.data[tech]] for tech in self.tech_indicator_list],
-                    [],
-                )
-            )
-            '''
-            state = np.concatenate(
-                (
-                    [self.state[0]],
-                    [self.data.close],
-                    self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)],
-                    [self.data[tech].values for tech in self.tech_indicator_list]
-                ), axis = None
-            )
+        close_value = self.data.close.values if self._multi_stock else [self.data.close]
+        tech_value = [self.data[tech].values for tech in self.tech_indicator_list] \
+            if self._multi_stock else [self.data[tech] for tech in self.tech_indicator_list]
+        
+        state = np.concatenate(
+            (
+                [self.state[0]],
+                close_value,
+                self.state[(self.stock_dim + 1) : (self.stock_dim * 2 + 1)],
+                tech_value
+            ), axis = None
+        )
 
         return state
 
     def _get_date(self):
-        if self._multi_stock:
+        #if self._multi_stock:
             #date = self.data.date.unique()[0]
-            date = self.data.time.unique()[0]
-        else:
+            # date = self.data.time.unique()[0] 
+        #else:
             # date = self.data.date
-            date = self.data.time
+            #date = self.data.time
+        date = self.date_range[self.day]
         return date
 
-    def get_portfolio_df(self):
+    def _get_portfolio_df(self):
         portfolio_df = pd.DataFrame(self.portfolio_memory)
         portfolio_df["date"] = pd.to_datetime(portfolio_df["date"])
-        portfolio_df.sort_values("date", inplace=True)
-        return portfolio_df[
-            [
-                "date",
-                "prev_total_asset",
-                "prev_cash",
-                "prev_market_value",
-                "total_asset",
-                "cash",
-                "market_value",
-                "cost",
-                "trades",
-                "reward",
-            ]
-        ]
+        #portfolio_df.sort_values("date", inplace=True)
+        return portfolio_df
+        
+    def _get_actions_df(self):
+        if self._multi_stock:
+            # date and close price length must match actions length
+            date_list = self.date_memory
+            '''
+            df_date = pd.DataFrame(date_list)
+            df_date.columns = ["date"]
+            '''
+            action_list = np.vstack(self.actions_memory)
+            '''
+            df_actions = pd.DataFrame(action_list)
+            df_actions.columns = self.data.tic.values
+            df_actions.index = df_date.date
+            # df_actions = pd.DataFrame({'date':date_list,'actions':action_list})
+            '''
+            df_actions = pd.DataFrame(action_list, index=date_list, columns=self.data.index.values)
+        else:
+            date_list = self.date_memory
+            action_list = self.actions_memory
+            df_actions = pd.DataFrame({"date": date_list, "actions": action_list})
+        return df_actions
 
     def _get_total_asset(self):
         """
@@ -685,7 +390,7 @@ class StockTradingEnv(gym.Env):
             ).sum()
 
     def save_asset_memory(self):
-        portfolio_df = self.get_portfolio_df()
+        portfolio_df = self._get_portfolio_df()
         df_account_value = portfolio_df[["date", "total_asset"]].rename(
             columns={"total_asset": "account_value"}
         )
@@ -715,6 +420,7 @@ class StockTradingEnv(gym.Env):
     '''
     def get_sb_env(self):
         e = DummyVecEnv([lambda: self])
+        e = VecNormalize(e, norm_obs=True, norm_reward=True) 
         obs = e.reset()
         return e, obs
 

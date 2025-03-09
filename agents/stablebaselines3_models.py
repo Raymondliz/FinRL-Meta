@@ -91,7 +91,7 @@ class DRLAgent:
         model = MODELS[model_name](
             policy=policy,
             env=self.env,
-            tensorboard_log=f"{config.TENSORBOARD_LOG_DIR}/{model_name}",
+            tensorboard_log=f"./{config.TENSORBOARD_LOG_DIR}/{model_name}",
             verbose=verbose,
             policy_kwargs=policy_kwargs,
             seed=seed,
@@ -111,22 +111,24 @@ class DRLAgent:
     def DRL_prediction(model, environment):
         test_env, test_obs = environment.get_sb_env()
         """make a prediction"""
-        account_memory = []
-        actions_memory = []
-        test_env.reset()
-        for i in range(len(environment.df.index.unique())):
+        # account_memory = []
+        # actions_memory = []
+        # test_env.reset()
+        dones = [False]
+        #for i in range(len(environment.df.index.unique())):
+        while not dones[0]:
             action, _states = model.predict(test_obs)
             # account_memory = test_env.env_method(method_name="save_asset_memory")
             # actions_memory = test_env.env_method(method_name="save_action_memory")
             test_obs, rewards, dones, info = test_env.step(action)
-            if i == (len(environment.df.index.unique()) - 2):
+            #if i == (len(environment.df.index.unique()) - 2):
             # if i == (len(environment.df.index.unique()) - 1):
-                account_memory = test_env.env_method(method_name="save_asset_memory")
-                actions_memory = test_env.env_method(method_name="save_action_memory")
-            if dones[0]:
-                print("hit end!")
-                break
-        return account_memory[0], actions_memory[0]
+            #    account_memory = test_env.env_method(method_name="save_asset_memory")
+            #    actions_memory = test_env.env_method(method_name="save_action_memory")
+            #if dones[0]:
+            #    print("hit end!")
+            #    break
+        return info[0]["portfolio_df"], info[0]["trade_actions_df"]
 
     @staticmethod
     def DRL_prediction_load_from_file(model_name, environment, cwd):

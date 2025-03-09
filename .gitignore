@@ -148,3 +148,6 @@ price_array.npy
 
 # tensorboard
 tensorboard_log/
+
+*.png
+*.csv
