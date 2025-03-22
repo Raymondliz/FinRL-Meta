@@ -1,5 +1,6 @@
 import gymnasium as gym
 import matplotlib
+from matplotlib.pylab import f
 import numpy as np
 import pandas as pd
 from gymnasium import spaces
@@ -109,59 +110,19 @@ class StockTradingEnv(gym.Env):
         # buy process
         # Here we use the percentage of each stock to buy instead of starving others in the original code
         buy_actions = np.where(actions>0, actions, 0)
-        buy_allocation = self.state[0] * buy_actions * close_prices/ np.sum(buy_actions * close_prices)
-        buy_num_shares = buy_allocation // (close_prices * (1 + self.buy_cost_pct))
-        # buy_num_shares = np.minimum(buy_num_shares, buy_actions)
-        buy_amount = np.dot(close_prices, buy_num_shares)
-        buy_cost = buy_amount * self.buy_cost_pct
-        self.state[0] -= buy_amount + buy_cost
-        self.state[self.stock_dim+1: 2*self.stock_dim+1] += buy_num_shares
-        self.cost += buy_cost
-        self.trades += (buy_num_shares!=0).sum()
-        
-        '''
+        buy_num_shares = np.zeros_like(buy_actions)
 
-        argsort_actions = np.argsort(actions)
-        buy_indices = argsort_actions[::-1][: np.where(actions > 0)[0].shape[0]]
-        mask = np.ones_like(actions, dtype=bool)
-        mask[buy_indices] = False
-        buy_act = actions.copy()
-        buy_act[mask] = 0
-        buy_allocation = buy_act / np.sum(buy_act[buy_indices]) * state_0 # NOTE: for not starving others
-        # buy_num_shares = np.zeros(stock_dim)
-        buy_num_shares = buy_allocation // (close_price * (1 + self.buy_cost_pct))
-        buy_amount = np.dot(self.state[1: self.stock_dim+1], buy_num_shares)
-        self.cost = buy_amount * self.buy_cost_pct
-        self.state[0] -= buy_amount + self.cost
-        self.state[self.stock_dim+1: 2*self.stock_dim+1] += buy_num_shares
-
-        buy_percentage = actions / np.sum(actions[buy_indices]) # NOTE: for not starving others
-        buy_num_shares = np.zeros(self.stock_dim)
-        # TODO: Maybe we dont need to iterate all buy_indices
-        for index in buy_indices:
-            if self.state[0] > 0:
-                available_amount = self.state[0] * buy_percentage[index] // (
-                    self.state[index + 1] * 
-                    (1 + self.buy_cost_pct)
-                    )
-                buy_num_shares[index] = min(available_amount, actions[index]) # ignore
-                buy_amount = self.state[index + 1] * buy_num_shares[index]
-                cost_amount = buy_amount * self.buy_cost_pct
-                self.state[0] -= buy_amount + cost_amount
-                self.cost += cost_amount       
-        self.state[self.stock_dim+1: 2*self.stock_dim+1] += buy_num_shares
-        self.trades += (buy_num_shares!=0).sum()
+        if buy_actions.sum() > 0:  # to avoid zero division
+            buy_allocation = self.state[0] * buy_actions * close_prices/ np.sum(buy_actions * close_prices)
+            buy_num_shares = buy_allocation // (close_prices * (1 + self.buy_cost_pct))
+            # buy_num_shares = np.minimum(buy_num_shares, buy_actions)
+            buy_amount = np.dot(close_prices, buy_num_shares)
+            buy_cost = buy_amount * self.buy_cost_pct
+            self.state[0] -= buy_amount + buy_cost
+            self.state[self.stock_dim+1: 2*self.stock_dim+1] += buy_num_shares
+            self.cost += buy_cost
+            self.trades += (buy_num_shares!=0).sum()        
         
-     
-        if self.turbulence_threshold is not None and self.turbulence >= self.turbulence_threshold:
-            sell_num_shares = self.state[self.stock_dim+1: 2*self.stock_dim+1]
-            sell_amount = np.dot(self.state[1: self.stock_dim+1], sell_num_shares)
-            cost_amount = sell_amount * self.sell_cost_pct
-            self.state[0] += sell_amount - cost_amount
-            self.state[self.stock_dim: 2*self.stock_dim+1] = 0
-            self.cost += cost_amount
-            self.trades += self.stock_dim
-        '''
         # final shares
         return buy_num_shares - sell_num_shares
 
@@ -195,17 +156,30 @@ class StockTradingEnv(gym.Env):
         # affect state[0], cost, trade and action itself
         final_action = self._trade_stock(action)
         self.actions_memory.append(final_action) 
+        
+        if np.isnan(self.state).any():
+            print(f'Nan values in state:\n {self.state}')
+            print(f'action: {action}')
+            print(self.data)
+            raise ValueError("Nan values in state")
 
         self.day += 1
         self.data = self.df.loc[self.date_range[self.day]]
+        assert self.data.isna().any().any() == False  
 
         self.state = self._update_state()  
+        
+        if np.isnan(self.state).any():
+            print(f'Nan values in state, {self.state}')
+            print(f'action: {action}')
+            print(self.data)
+            raise ValueError("Nan values in state")
 
 
         if self.turbulence_threshold is not None:
                 self.turbulence = self.data["turbulence"].values[0]
         
-        # calculate information after trading
+        # information after trading
         end_cash = self.state[0]
         end_market_value = self._get_market_value()
         end_total_asset = end_cash + end_market_value
@@ -217,10 +191,9 @@ class StockTradingEnv(gym.Env):
         self.reward = self.reward * self.reward_scaling
 
         # some panelty?
-        no_trade_indices = np.where((begin_stock - end_stock) == 0)[0]
-        penalty  = np.dot(self.state[no_trade_indices+1], self.state[no_trade_indices+self.stock_dim+1]) \
-            * 0.001
-        self.reward -= penalty
+        # no_trade_indices = np.where((begin_stock - end_stock) == 0)[0]
+        #penalty  = np.dot(self.state[no_trade_indices+1], self.state[no_trade_indices+self.stock_dim+1]) * 0.001
+        # self.reward -= penalty
 
         date = self._get_date()
 
@@ -241,8 +214,6 @@ class StockTradingEnv(gym.Env):
         ) 
         self.portfolio_memory.append(step_info)
         self.date_memory.append(date)
-
-        self.reward = self.reward * self.reward_scaling
           
         # update next state# state makes 
         if self.terminal:
@@ -279,7 +250,10 @@ class StockTradingEnv(gym.Env):
             info = {"portfolio_df": portfolio_df, "trade_actions_df": trade_actions_df}
         else:
             info = {}
-
+        
+        if np.isnan(self.state).any():
+            print(f'Nan values in state, {self.state}')
+            raise ValueError("Nan values in state")
         return self.state, self.reward, self.terminal, False, info
 
     def reset(self, seed=None, options=None):

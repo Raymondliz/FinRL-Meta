@@ -48,6 +48,7 @@ SAC_PARAMS = {
     "learning_rate": 0.0001,
     "learning_starts": 100,
     "ent_coef": "auto_0.1",
+    "gradient_steps": 1, # default?
 }
 ERL_PARAMS = {
     "learning_rate": 3e-5,

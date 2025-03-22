@@ -16,6 +16,8 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from meta import config
 from meta.env_stock_trading.env_stock_trading import StockTradingEnv
 
+import torch
+
 # RL models from stable-baselines
 
 
@@ -42,8 +44,34 @@ class TensorboardCallback(BaseCallback):
             self.logger.record(key="train/reward", value=self.locals["rewards"][0])
         except BaseException:
             self.logger.record(key="train/reward", value=self.locals["reward"][0])
+        var = "new_obs"
+        value = self.locals.get(var)
+        # print(f"new_obs is {value}")
+        if value is not None and np.isnan(value).any():
+            print(f"Warning: NaN detected in {var} at step {self.num_timesteps} with value {value}")
+            return False
         return True
+    '''
+    def _on_rollout_start(self):
+        # 记录Actor网络的梯度范数
+        # print("*** Training Start ***")
+        actor_grads = []
+        for param in self.model.policy.actor.parameters():
+            if param.grad is not None:
+                actor_grads.append(param.grad.view(-1))
+        if actor_grads:
+            actor_grad_norm = torch.cat(actor_grads).norm(2).item()
+            self.logger.record("gradients/actor_norm", actor_grad_norm)
 
+        # 记录Critic网络的梯度范数
+        critic_grads = []
+        for param in self.model.policy.critic.parameters():
+            if param.grad is not None:
+                critic_grads.append(param.grad.view(-1))
+        if critic_grads:
+            critic_grad_norm = torch.cat(critic_grads).norm(2).item()
+            self.logger.record("gradients/critic_norm", critic_grad_norm)
+    '''
 
 class DRLAgent:
     """Provides implementations for DRL algorithms
@@ -88,10 +116,19 @@ class DRLAgent:
                 mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)
             )
         print(model_kwargs)
+
+        # Define exponential decay function
+        def linear_decay(progress_remaining: float) -> float:
+            """Returns a decreasing learning rate from 0.0003 to 0.00003"""
+            #print(model_kwargs['learning_rate'])
+            return 0.0003 * progress_remaining  # progress_remaining goes from 1 → 0
+        
+        # model_kwargs['learning_rate'] = linear_decay
+    
         model = MODELS[model_name](
             policy=policy,
             env=self.env,
-            tensorboard_log=f"./{config.TENSORBOARD_LOG_DIR}/{model_name}",
+            tensorboard_log=f"{config.TENSORBOARD_LOG_DIR}/{model_name}",
             verbose=verbose,
             policy_kwargs=policy_kwargs,
             seed=seed,
